@@ -32,7 +32,7 @@ const bidSchema = z.object({
   amount: z.number().positive(),
 });
 
-const emitPlayerResult = (io, state) => {
+const emitPlayerResult = (io, state, acquisitionMethod = "AUCTION") => {
   if (!state || !["PLAYER_SOLD", "PLAYER_UNSOLD"].includes(state.status)) {
     return;
   }
@@ -41,9 +41,11 @@ const emitPlayerResult = (io, state) => {
   io?.to("auction-room").emit("player_result", {
     playerId: state.current_player_id,
     playerName: state.player_display_name || state.player_name || "Player",
+    playerPhoto: state.player_photo || null,
     status: sold ? "SOLD" : "UNSOLD",
     teamName: sold ? state.highest_bidder_team_name : null,
     amount: sold ? Number(state.current_bid || 0) : null,
+    acquisitionMethod: sold ? acquisitionMethod : null,
   });
   if (sold) io?.to("auction-room").emit("team_rosters_updated");
 };
@@ -233,7 +235,7 @@ router.post(
       const state = await getAuctionState();
       const io = req.app.get("io");
       io?.to("auction-room").emit("auction_state", { state });
-      emitPlayerResult(io, state);
+      emitPlayerResult(io, state, "SUPER_STEAL");
       io?.to("auction-room").emit("super_steal_claimed", result);
       return successResponse(res, { result, state });
     } catch (error) {
