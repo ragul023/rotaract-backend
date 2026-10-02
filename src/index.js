@@ -15,20 +15,100 @@ import adminRoutes from "./routes/adminRoutes.js";
 import tradeRoutes from "./routes/tradeRoutes.js";
 
 import { query } from "./database/connection.js";
-
-import { errorResponse, successResponse } from "./utils/response.js";
+import { errorResponse } from "./utils/response.js";
 
 import { attachSocketHandlers } from "./socket/index.js";
 
-const app = express();
-app.set("trust proxy", env.NODE_ENV === "production" ? 1 : false);
+/*
+|--------------------------------------------------------------------------
+| APP
+|--------------------------------------------------------------------------
+*/
 
-const corsOrigin = (origin, callback) => {
-  if (!origin || env.CLIENT_URLS.includes(origin)) {
-    return callback(null, true);
-  }
-  console.warn(`Rejected cross-origin request from ${origin}`);
-  return callback(null, false);
+const app = express();
+
+/*
+|--------------------------------------------------------------------------
+| TRUST PROXY
+|--------------------------------------------------------------------------
+|
+| Required when running behind Render's proxy.
+|
+*/
+
+app.set(
+  "trust proxy",
+  env.NODE_ENV === "production" ? 1 : false
+);
+
+/*
+|--------------------------------------------------------------------------
+| ALLOWED CORS ORIGINS
+|--------------------------------------------------------------------------
+*/
+
+const allowedOrigins = [
+  "https://rotaract-ipl.vercel.app",
+
+  // Local development
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+/*
+|--------------------------------------------------------------------------
+| CORS CONFIGURATION
+|--------------------------------------------------------------------------
+*/
+
+const corsOptions = {
+  origin(origin, callback) {
+    /*
+     * Requests without an Origin header can happen from:
+     * - curl
+     * - Postman
+     * - server-to-server requests
+     * - health checks
+     */
+
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn(`[CORS] Rejected origin: ${origin}`);
+
+    return callback(
+      new Error(`CORS blocked origin: ${origin}`)
+    );
+  },
+
+  credentials: true,
+
+  methods: [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+  ],
+
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+  ],
+
+  exposedHeaders: [
+    "Content-Length",
+    "Content-Type",
+  ],
+
+  maxAge: 86400,
 };
 
 /*
@@ -47,69 +127,198 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: corsOrigin,
-    methods: ["GET", "POST"],
+    origin: corsOptions.origin,
     credentials: true,
+
+    methods: [
+      "GET",
+      "POST",
+    ],
   },
 
-  // Allow Socket.IO to negotiate the best transport.
-  transports: ["polling", "websocket"],
+  transports: [
+    "polling",
+    "websocket",
+  ],
+
+  /*
+   * Useful for production connections.
+   */
+
+  pingInterval: 25000,
+  pingTimeout: 20000,
+
+  /*
+   * Prevent extremely large socket payloads.
+   */
+
+  maxHttpBufferSize: 1e6,
 });
 
 app.set("io", io);
 
 /*
 |--------------------------------------------------------------------------
-| MIDDLEWARE
+| SECURITY MIDDLEWARE
 |--------------------------------------------------------------------------
 */
 
-app.use(helmet());
-
 app.use(
-  cors({
-    origin: corsOrigin,
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    maxAge: 600,
-  }),
+  helmet({
+    crossOriginResourcePolicy: {
+      policy: "cross-origin",
+    },
+  })
 );
 
-app.use(express.json({ limit: "2mb" }));
+/*
+|--------------------------------------------------------------------------
+| CORS
+|--------------------------------------------------------------------------
+*/
+
+app.use(cors(corsOptions));
+
+/*
+|--------------------------------------------------------------------------
+| BODY PARSING
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+  express.json({
+    limit: "2mb",
+  })
+);
 
 app.use(
   express.urlencoded({
     extended: true,
-  }),
+    limit: "2mb",
+  })
 );
 
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 300,
-    standardHeaders: true,
-    legacyHeaders: false,
-  }),
-);
+/*
+|--------------------------------------------------------------------------
+| RATE LIMITING
+|--------------------------------------------------------------------------
+*/
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+
+  max: 300,
+
+  standardHeaders: true,
+
+  legacyHeaders: false,
+
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+});
+
+/*
+|--------------------------------------------------------------------------
+| AUTH RATE LIMITER
+|--------------------------------------------------------------------------
+|
+| Login/register endpoints should have stricter protection.
+|
+*/
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+
+  max: 50,
+
+  standardHeaders: true,
+
+  legacyHeaders: false,
+
+  message: {
+    success: false,
+    message: "Too many authentication attempts. Please try again later.",
+  },
+});
+
+/*
+|--------------------------------------------------------------------------
+| GLOBAL API RATE LIMIT
+|--------------------------------------------------------------------------
+*/
+
+app.use("/api", apiLimiter);
 
 /*
 |--------------------------------------------------------------------------
 | HEALTH CHECK
 |--------------------------------------------------------------------------
+|
+| Lightweight server health check.
+|
 */
 
-app.get("/api/health", async (_req, res) => {
+app.get("/", (_req, res) => {
+  return res.status(200).json({
+    success: true,
+    service: "rotaract-backend",
+    status: "running",
+    environment: env.NODE_ENV,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| SERVER HEALTH
+|--------------------------------------------------------------------------
+|
+| Does NOT query the database.
+|
+*/
+
+app.get("/api/health", (_req, res) => {
+  return res.status(200).json({
+    success: true,
+    status: "ok",
+    service: "rotaract-backend",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| DATABASE HEALTH
+|--------------------------------------------------------------------------
+|
+| Useful for debugging Neon connectivity.
+|
+*/
+
+app.get("/api/health/db", async (_req, res) => {
   try {
     await query("SELECT 1");
 
-    return successResponse(res, {
+    return res.status(200).json({
+      success: true,
       status: "ok",
-      db: "connected",
+      database: "connected",
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("Health check DB error:", error);
+    console.error(
+      "[HEALTH] Database error:",
+      error
+    );
 
-    return errorResponse(res, "DB unavailable", 500, "DB_UNAVAILABLE");
+    return res.status(503).json({
+      success: false,
+      status: "error",
+      database: "unavailable",
+      timestamp: new Date().toISOString(),
+    });
   }
 });
 
@@ -120,7 +329,8 @@ app.get("/api/health", async (_req, res) => {
 */
 
 app.get("/api/test", (_req, res) => {
-  return successResponse(res, {
+  return res.status(200).json({
+    success: true,
     message: "Server is running",
   });
 });
@@ -131,28 +341,63 @@ app.get("/api/test", (_req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.use("/api/auth", authRoutes);
-app.use("/api/teams", teamRoutes);
-app.use("/api/players", playerRoutes);
-app.use("/api/auction", auctionRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api/trades", tradeRoutes);
+/*
+ * Authentication gets its own stricter rate limiter.
+ */
+
+app.use(
+  "/api/auth",
+  authLimiter,
+  authRoutes
+);
+
+app.use(
+  "/api/teams",
+  teamRoutes
+);
+
+app.use(
+  "/api/players",
+  playerRoutes
+);
+
+app.use(
+  "/api/auction",
+  auctionRoutes
+);
+
+app.use(
+  "/api/admin",
+  adminRoutes
+);
+
+app.use(
+  "/api/trades",
+  tradeRoutes
+);
 
 /*
 |--------------------------------------------------------------------------
-| SOCKET.IO CONNECTION LOGGING
+| SOCKET CONNECTION LOGGING
 |--------------------------------------------------------------------------
 */
 
 io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
+  console.log(
+    `[SOCKET] Connected: ${socket.id}`
+  );
 
   socket.on("disconnect", (reason) => {
-    console.log("Socket disconnected:", socket.id, "Reason:", reason);
+    console.log(
+      `[SOCKET] Disconnected: ${socket.id} | ${reason}`
+    );
   });
 
   socket.on("error", (error) => {
-    console.error("Socket error:", socket.id, error);
+    console.error(
+      `[SOCKET] Error: ${socket.id}`,
+      error
+    );
   });
 });
 
@@ -166,27 +411,160 @@ attachSocketHandlers(io);
 
 /*
 |--------------------------------------------------------------------------
-| ERROR HANDLER
+| 404 HANDLER
 |--------------------------------------------------------------------------
 */
 
-app.use((err, _req, res, _next) => {
-  console.error("Express error:", err);
+app.use((req, res) => {
+  return res.status(404).json({
+    success: false,
+    message: "Route not found",
+    path: req.originalUrl,
+  });
+});
 
-  if (err) {
-    return errorResponse(
-      res,
-      err.message || "Server error",
-      500,
-      "SERVER_ERROR",
-    );
+/*
+|--------------------------------------------------------------------------
+| GLOBAL ERROR HANDLER
+|--------------------------------------------------------------------------
+*/
+
+app.use((err, req, res, _next) => {
+  console.error(
+    "[EXPRESS ERROR]",
+    {
+      message: err?.message,
+      method: req.method,
+      path: req.originalUrl,
+      stack:
+        process.env.NODE_ENV === "production"
+          ? undefined
+          : err?.stack,
+    }
+  );
+
+  /*
+   * CORS error
+   */
+
+  if (
+    err?.message?.startsWith("CORS blocked")
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: "Origin not allowed",
+    });
   }
+
+  /*
+   * Don't expose internal errors in production.
+   */
 
   return res.status(500).json({
     success: false,
-    message: "Unknown error",
+    message:
+      env.NODE_ENV === "production"
+        ? "Internal server error"
+        : err?.message || "Server error",
   });
 });
+
+/*
+|--------------------------------------------------------------------------
+| PROCESS ERROR HANDLING
+|--------------------------------------------------------------------------
+*/
+
+process.on(
+  "uncaughtException",
+  (error) => {
+    console.error(
+      "[PROCESS] Uncaught exception:",
+      error
+    );
+  }
+);
+
+process.on(
+  "unhandledRejection",
+  (reason) => {
+    console.error(
+      "[PROCESS] Unhandled rejection:",
+      reason
+    );
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| GRACEFUL SHUTDOWN
+|--------------------------------------------------------------------------
+*/
+
+let isShuttingDown = false;
+
+const shutdown = async (signal) => {
+  if (isShuttingDown) {
+    return;
+  }
+
+  isShuttingDown = true;
+
+  console.log(
+    `[SERVER] ${signal} received. Shutting down...`
+  );
+
+  /*
+   * Stop accepting new HTTP connections.
+   */
+
+  server.close(async () => {
+    console.log(
+      "[SERVER] HTTP server closed."
+    );
+
+    try {
+      /*
+       * Close Socket.IO connections.
+       */
+
+      io.close();
+
+      console.log(
+        "[SERVER] Socket.IO closed."
+      );
+    } catch (error) {
+      console.error(
+        "[SERVER] Shutdown error:",
+        error
+      );
+    }
+
+    process.exit(0);
+  });
+
+  /*
+   * Safety timeout.
+   */
+
+  setTimeout(() => {
+    console.error(
+      "[SERVER] Forced shutdown."
+    );
+
+    process.exit(1);
+  }, 10000).unref();
+};
+
+process.on(
+  "SIGTERM",
+  () => shutdown("SIGTERM")
+);
+
+process.on(
+  "SIGINT",
+  () => shutdown("SIGINT")
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -194,13 +572,48 @@ app.use((err, _req, res, _next) => {
 |--------------------------------------------------------------------------
 */
 
-const PORT = env.PORT || 5002;
+const PORT = Number(
+  env.PORT || process.env.PORT || 5002
+);
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server listening on port ${PORT}`);
-  console.log(`Client URL: ${env.CLIENT_URL}`);
-});
+server.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      "======================================"
+    );
 
-server.on("error", (error) => {
-  console.error("HTTP server error:", error);
-});
+    console.log(
+      `[SERVER] Running on port ${PORT}`
+    );
+
+    console.log(
+      `[SERVER] Environment: ${env.NODE_ENV}`
+    );
+
+    console.log(
+      `[SERVER] Client: ${env.CLIENT_URL}`
+    );
+
+    console.log(
+      "======================================"
+    );
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| SERVER ERROR
+|--------------------------------------------------------------------------
+*/
+
+server.on(
+  "error",
+  (error) => {
+    console.error(
+      "[HTTP SERVER ERROR]",
+      error
+    );
+  }
+);
