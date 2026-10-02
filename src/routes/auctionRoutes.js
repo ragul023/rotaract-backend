@@ -16,6 +16,7 @@ import {
 import {
   getAuctionState,
   startAuction,
+  finishAuction,
   pauseAuction,
   resumeAuction,
   nextPlayer,
@@ -42,6 +43,7 @@ const emitPlayerResult = (io, state, acquisitionMethod = "AUCTION") => {
     playerId: state.current_player_id,
     playerName: state.player_display_name || state.player_name || "Player",
     playerPhoto: state.player_photo || null,
+    franchiseName: state.franchise_name || null,
     status: sold ? "SOLD" : "UNSOLD",
     teamName: sold ? state.highest_bidder_team_name : null,
     amount: sold ? Number(state.current_bid || 0) : null,
@@ -138,6 +140,13 @@ router.post(
   authMiddleware,
   requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
   auctionAction(() => startAuction(), 201),
+);
+
+router.post(
+  "/finish",
+  authMiddleware,
+  requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
+  auctionAction(() => finishAuction()),
 );
 
 router.post(

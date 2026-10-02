@@ -328,6 +328,57 @@ export const nextPlayer = async () => {
   });
 };
 
+export const finishAuction = async () =>
+  withTransaction(async (client) => {
+    const active = await client.query(
+      "SELECT * FROM auction ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+    );
+    if (active.rowCount === 0) throw new Error("Auction not initialized");
+    const auction = active.rows[0];
+    if (["AUCTION_COMPLETED", "FINISHED"].includes(auction.status)) {
+      return auction;
+    }
+    if (
+      ![
+        "LOBBY",
+        "BIDDING",
+        "AUCTION_PAUSED",
+        "PLAYER_SOLD",
+        "PLAYER_UNSOLD",
+      ].includes(auction.status)
+    ) {
+      throw new Error("Auction cannot be finished in its current state");
+    }
+
+    if (auction.current_player_id) {
+      const finalPlayerStatus =
+        auction.status === "PLAYER_SOLD"
+          ? "SOLD"
+          : auction.status === "PLAYER_UNSOLD"
+            ? "UNSOLD"
+            : "UNSOLD";
+      await client.query(
+        `UPDATE auction_players SET status = $3
+         WHERE auction_id = $1 AND player_id = $2 AND status = 'CURRENT'`,
+        [auction.id, auction.current_player_id, finalPlayerStatus],
+      );
+      if (finalPlayerStatus === "UNSOLD") {
+        await client.query(
+          "UPDATE players SET status = 'UNSOLD', updated_at = NOW() WHERE id = $1 AND status = 'AVAILABLE'",
+          [auction.current_player_id],
+        );
+      }
+    }
+
+    const completed = await client.query(
+      `UPDATE auction SET status = 'AUCTION_COMPLETED', current_player_id = NULL,
+         auction_completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [auction.id],
+    );
+    return completed.rows[0];
+  });
+
 export const forceSell = async ({ teamId, amount }) => {
   return withTransaction(async (client) => {
     const auctionRow = await client.query(
