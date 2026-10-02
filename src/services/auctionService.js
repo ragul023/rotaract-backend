@@ -1,42 +1,5 @@
 import { query, withTransaction } from "../database/connection.js";
 
-const readDefaultBidTime = async (client) => {
-  const result = await client.query(
-    "SELECT value FROM game_settings WHERE key = 'initial_timer_seconds'",
-  );
-  const seconds = Number(result.rows[0]?.value ?? 30);
-  return Number.isInteger(seconds) && seconds >= 5 && seconds <= 600
-    ? seconds
-    : 30;
-};
-
-export const getDefaultBidTime = async () => readDefaultBidTime({ query });
-
-export const updateDefaultBidTime = async ({ actorId, seconds }) =>
-  withTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO game_settings (key, value)
-       VALUES ('initial_timer_seconds', $1::jsonb)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [JSON.stringify(seconds)],
-    );
-    const active = await client.query(
-      "SELECT id FROM auction ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
-    );
-    if (active.rowCount > 0) {
-      await client.query(
-        "UPDATE auction SET timer_seconds = $2, updated_at = NOW() WHERE id = $1",
-        [active.rows[0].id, seconds],
-      );
-    }
-    await client.query(
-      `INSERT INTO audit_logs (actor_user_id, action, target, new_value)
-       VALUES ($1, 'BID_TIME_UPDATED', NULL, $2::jsonb)`,
-      [actorId, JSON.stringify({ seconds })],
-    );
-    return { seconds };
-  });
-
 export const getAuctionState = async () => {
   const auction = await query(
     `SELECT a.*, p.name AS player_name, p.display_name AS player_display_name,
@@ -148,11 +111,9 @@ export const updatePlayerQueue = async ({ actorId, playerIds }) => {
       !auction ||
       ["AUCTION_COMPLETED", "FINISHED"].includes(auction.status)
     ) {
-      const timerSeconds = await readDefaultBidTime(client);
       const created = await client.query(
-        `INSERT INTO auction (status, current_bid, bid_increment, timer_seconds)
-         VALUES ('LOBBY', 0, 1, $1) RETURNING *`,
-        [timerSeconds],
+        `INSERT INTO auction (status, current_bid, bid_increment)
+         VALUES ('LOBBY', 0, 1) RETURNING *`,
       );
       auction = created.rows[0];
     } else if (
@@ -222,11 +183,9 @@ export const startAuction = async () => {
       !auction ||
       ["AUCTION_COMPLETED", "FINISHED"].includes(auction.status)
     ) {
-      const timerSeconds = await readDefaultBidTime(client);
       const inserted = await client.query(
-        `INSERT INTO auction (status, current_bid, bid_increment, timer_seconds)
-         VALUES ('LOBBY', 0, 1, $1) RETURNING *`,
-        [timerSeconds],
+        `INSERT INTO auction (status, current_bid, bid_increment)
+         VALUES ('LOBBY', 0, 1) RETURNING *`,
       );
       auction = inserted.rows[0];
     } else if (auction.status !== "LOBBY") {
@@ -268,7 +227,6 @@ export const startAuction = async () => {
       `UPDATE auction
        SET status = 'BIDDING', current_player_id = $2, current_bid = 0,
            highest_bidder_team_id = NULL, current_sequence = 0,
-           bid_ends_at = NOW() + make_interval(secs => timer_seconds),
            auction_started_at = COALESCE(auction_started_at, NOW()), updated_at = NOW()
        WHERE id = $1 RETURNING *`,
       [auction.id, next.rows[0].player_id],
@@ -286,7 +244,7 @@ export const pauseAuction = async () => {
       throw new Error("Auction is not currently accepting bids");
     }
     const paused = await client.query(
-      `UPDATE auction SET status = 'AUCTION_PAUSED', bid_ends_at = NULL,
+      `UPDATE auction SET status = 'AUCTION_PAUSED',
        updated_at = NOW() WHERE id = $1 RETURNING *`,
       [active.rows[0].id],
     );
@@ -308,7 +266,6 @@ export const resumeAuction = async () => {
     }
     const resumed = await client.query(
       `UPDATE auction SET status = 'BIDDING',
-       bid_ends_at = NOW() + make_interval(secs => timer_seconds),
        updated_at = NOW() WHERE id = $1 RETURNING *`,
       [active.rows[0].id],
     );
@@ -348,7 +305,7 @@ export const nextPlayer = async () => {
     if (next.rowCount === 0) {
       const completed = await client.query(
         `UPDATE auction SET status = 'AUCTION_COMPLETED', current_player_id = NULL,
-         bid_ends_at = NULL, auction_completed_at = NOW(), updated_at = NOW()
+         auction_completed_at = NOW(), updated_at = NOW()
          WHERE id = $1 RETURNING *`,
         [auction.id],
       );
@@ -362,8 +319,8 @@ export const nextPlayer = async () => {
     );
     const advanced = await client.query(
       `UPDATE auction SET status = 'BIDDING', current_player_id = $2,
-       current_bid = 0, highest_bidder_team_id = NULL, current_sequence = 0,
-       bid_ends_at = NOW() + make_interval(secs => timer_seconds), updated_at = NOW()
+      current_bid = 0, highest_bidder_team_id = NULL, current_sequence = 0,
+      updated_at = NOW()
        WHERE id = $1 RETURNING *`,
       [auction.id, next.rows[0].player_id],
     );
@@ -446,7 +403,7 @@ export const forceSell = async ({ teamId, amount }) => {
     );
     const sold = await client.query(
       `UPDATE auction SET status = 'PLAYER_SOLD', highest_bidder_team_id = $1,
-       current_bid = $2, bid_ends_at = NULL, updated_at = NOW()
+      current_bid = $2, updated_at = NOW()
        WHERE id = $3 RETURNING *`,
       [teamId, saleAmount, auction.id],
     );
@@ -476,7 +433,7 @@ export const markUnsold = async () => {
     );
     const unsold = await client.query(
       `UPDATE auction SET status = 'PLAYER_UNSOLD', current_bid = 0,
-       highest_bidder_team_id = NULL, bid_ends_at = NULL, updated_at = NOW()
+      highest_bidder_team_id = NULL, updated_at = NOW()
        WHERE id = $1 RETURNING *`,
       [auction.id],
     );
@@ -532,9 +489,6 @@ export const lockBid = async ({ teamId, amount, playerId }) => {
       throw new Error("Auction is not accepting bids");
     if (auction.current_player_id !== playerId)
       throw new Error("Bid is not for the current player");
-    if (!auction.bid_ends_at || new Date(auction.bid_ends_at) <= new Date())
-      throw new Error("Bidding time has expired");
-
     const playerRow = await client.query(
       "SELECT id, base_price, status FROM players WHERE id = $1 FOR UPDATE",
       [playerId],
@@ -583,7 +537,8 @@ export const lockBid = async ({ teamId, amount, playerId }) => {
     );
 
     await client.query(
-      `UPDATE auction SET current_bid = $1, highest_bidder_team_id = $2, current_sequence = $3, bid_ends_at = NOW() + INTERVAL '10 seconds' WHERE id = $4`,
+      `UPDATE auction SET current_bid = $1, highest_bidder_team_id = $2,
+       current_sequence = $3, updated_at = NOW() WHERE id = $4`,
       [amount, teamId, nextSequence, auction.id],
     );
 

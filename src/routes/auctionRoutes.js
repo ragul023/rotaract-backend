@@ -23,10 +23,7 @@ import {
   markUnsold,
   lockBid,
 } from "../services/auctionService.js";
-import {
-  useSuperSteal,
-  useTacticalTimeout,
-} from "../services/specialPowerService.js";
+import { useSuperSteal } from "../services/specialPowerService.js";
 
 const router = express.Router();
 
@@ -245,34 +242,6 @@ router.post(
         error.message || "Super Steal failed",
         400,
         "SUPER_STEAL_FAILED",
-      );
-    }
-  },
-);
-
-router.post(
-  "/tactical-timeout",
-  authMiddleware,
-  requireRole("PARTICIPANT"),
-  requireTeamAccess,
-  requireApprovedTeam,
-  async (req, res) => {
-    try {
-      const result = await useTacticalTimeout({
-        teamId: req.user.teamId,
-        actorId: req.user.id,
-      });
-      const state = await getAuctionState();
-      const io = req.app.get("io");
-      io?.to("auction-room").emit("auction_state", { state });
-      io?.to("auction-room").emit("tactical_timeout_used", result);
-      return successResponse(res, { result, state });
-    } catch (error) {
-      return errorResponse(
-        res,
-        error.message || "Tactical Timeout failed",
-        400,
-        "TACTICAL_TIMEOUT_FAILED",
       );
     }
   },

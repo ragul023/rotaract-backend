@@ -129,8 +129,6 @@ CREATE TABLE IF NOT EXISTS auction (
   current_bid NUMERIC(10,2) NOT NULL DEFAULT 0,
   highest_bidder_team_id UUID REFERENCES college_teams(id),
   bid_increment NUMERIC(10,2) NOT NULL DEFAULT 1.00,
-  timer_seconds INTEGER NOT NULL DEFAULT 30,
-  bid_ends_at TIMESTAMPTZ,
   current_sequence INTEGER NOT NULL DEFAULT 0,
   auction_started_at TIMESTAMPTZ,
   auction_completed_at TIMESTAMPTZ,
@@ -139,6 +137,10 @@ CREATE TABLE IF NOT EXISTS auction (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE auction
+  DROP COLUMN IF EXISTS timer_seconds,
+  DROP COLUMN IF EXISTS bid_ends_at;
+DELETE FROM game_settings WHERE key = 'initial_timer_seconds';
 
 CREATE TABLE IF NOT EXISTS auction_players (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -245,6 +247,7 @@ CREATE TABLE IF NOT EXISTS team_power_uses (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (auction_id, team_id, power_key)
 );
+DELETE FROM team_power_uses WHERE power_key = 'TACTICAL_TIMEOUT';
 
 CREATE TABLE IF NOT EXISTS secret_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

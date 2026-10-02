@@ -123,7 +123,6 @@ async function seed() {
     }
 
     const settings = [
-      { key: "initial_timer_seconds", value: 30 },
       { key: "bid_increment", value: 1 },
       { key: "max_team_members", value: 5 },
       { key: "auction_reveal_after_players", value: 0 },
@@ -156,20 +155,10 @@ async function seed() {
 
     const auctionExists = await client.query("SELECT id FROM auction LIMIT 1");
     if (auctionExists.rowCount === 0) {
-      const timerSetting = await client.query(
-        "SELECT value FROM game_settings WHERE key = 'initial_timer_seconds'",
-      );
-      const configuredTimer = Number(timerSetting.rows[0]?.value ?? 30);
-      const timerSeconds =
-        Number.isInteger(configuredTimer) &&
-        configuredTimer >= 5 &&
-        configuredTimer <= 600
-          ? configuredTimer
-          : 30;
       await client.query(
-        `INSERT INTO auction (id, status, current_bid, bid_increment, timer_seconds, bid_ends_at)
-         VALUES ($1, 'LOBBY', 0, 1, $2, NOW())`,
-        [uuidv4(), timerSeconds],
+        `INSERT INTO auction (id, status, current_bid, bid_increment)
+         VALUES ($1, 'LOBBY', 0, 1)`,
+        [uuidv4()],
       );
     }
   });

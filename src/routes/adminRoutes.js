@@ -5,9 +5,7 @@ import { errorResponse } from "../utils/response.js";
 import {
   getAdminOverview,
   getAuctionState,
-  getDefaultBidTime,
   getPlayerQueue,
-  updateDefaultBidTime,
   updatePlayerQueue,
 } from "../services/auctionService.js";
 import {
@@ -75,7 +73,6 @@ const teamAssignmentSchema = z.object({ franchiseId: z.string().uuid() });
 const registrationFeeSchema = z.object({
   fee: z.number().finite().min(0.01).max(10000000),
 });
-const bidTimeSchema = z.object({ seconds: z.number().int().min(5).max(600) });
 
 const assignmentAction = (action) => async (req, res) => {
   try {
@@ -90,36 +87,6 @@ const assignmentAction = (action) => async (req, res) => {
     );
   }
 };
-
-router.get(
-  "/bid-time",
-  authMiddleware,
-  requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
-  async (_req, res) =>
-    successResponse(res, { seconds: await getDefaultBidTime() }),
-);
-
-router.put(
-  "/bid-time",
-  authMiddleware,
-  requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
-  async (req, res) => {
-    try {
-      const { seconds } = bidTimeSchema.parse(req.body);
-      await updateDefaultBidTime({ actorId: req.user.id, seconds });
-      const state = await getAuctionState();
-      req.app.get("io")?.to("auction-room").emit("auction_state", { state });
-      return successResponse(res, { seconds, state });
-    } catch (error) {
-      return errorResponse(
-        res,
-        error.message || "Unable to update default bid time",
-        400,
-        "BID_TIME_UPDATE_FAILED",
-      );
-    }
-  },
-);
 
 router.get(
   "/trade-window",
