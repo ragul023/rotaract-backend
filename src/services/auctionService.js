@@ -350,13 +350,29 @@ export const finishAuction = async () =>
       throw new Error("Auction cannot be finished in its current state");
     }
 
+    await client.query(
+      `SELECT id FROM college_teams WHERE status = 'ACTIVE'
+       ORDER BY id FOR UPDATE`,
+    );
+    const incompleteTeams = await client.query(
+      `SELECT ct.name, COUNT(s.player_id)::int AS squad_count,
+         COUNT(s.player_id) FILTER (WHERE s.is_playing_xi)::int AS xi_count
+       FROM college_teams ct
+       LEFT JOIN squads s ON s.team_id = ct.id
+       WHERE ct.status = 'ACTIVE'
+       GROUP BY ct.id
+       HAVING COUNT(s.player_id) NOT BETWEEN 11 AND 18
+          OR COUNT(s.player_id) FILTER (WHERE s.is_playing_xi) <> 11`,
+    );
+    if (incompleteTeams.rowCount > 0) {
+      throw new Error(
+        `Every active team must have 11–18 players and fix exactly 11 for its playing XI before finishing: ${incompleteTeams.rows.map((team) => team.name).join(", ")}`,
+      );
+    }
+
     if (auction.current_player_id) {
       const finalPlayerStatus =
-        auction.status === "PLAYER_SOLD"
-          ? "SOLD"
-          : auction.status === "PLAYER_UNSOLD"
-            ? "UNSOLD"
-            : "UNSOLD";
+        auction.status === "PLAYER_SOLD" ? "SOLD" : "UNSOLD";
       await client.query(
         `UPDATE auction_players SET status = $3
          WHERE auction_id = $1 AND player_id = $2 AND status = 'CURRENT'`,
@@ -369,6 +385,10 @@ export const finishAuction = async () =>
         );
       }
     }
+
+    await client.query(
+      "UPDATE college_teams SET playing_xi_locked = TRUE WHERE status = 'ACTIVE'",
+    );
 
     const completed = await client.query(
       `UPDATE auction SET status = 'AUCTION_COMPLETED', current_player_id = NULL,

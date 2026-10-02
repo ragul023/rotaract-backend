@@ -247,6 +247,10 @@ CREATE TABLE IF NOT EXISTS team_power_uses (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (auction_id, team_id, power_key)
 );
+ALTER TABLE team_power_uses
+  DROP CONSTRAINT IF EXISTS team_power_uses_auction_id_team_id_power_key_key;
+CREATE INDEX IF NOT EXISTS team_power_uses_auction_team_power
+  ON team_power_uses(auction_id, team_id, power_key);
 DELETE FROM team_power_uses WHERE power_key = 'TACTICAL_TIMEOUT';
 
 CREATE TABLE IF NOT EXISTS secret_assignments (

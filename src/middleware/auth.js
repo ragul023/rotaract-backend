@@ -16,11 +16,26 @@ export const authMiddleware = async (req, res, next) => {
     return errorResponse(res, "Authentication required", 401, "AUTH_REQUIRED");
   }
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, env.JWT_SECRET);
+    decoded = jwt.verify(token, env.JWT_SECRET);
+  } catch {
+    return errorResponse(res, "Invalid or expired token", 401, "INVALID_TOKEN");
+  }
+
+  try {
     const userResult = await query(
-      "SELECT id, email, role, name, is_active FROM users WHERE id = $1",
-      [decoded.userId],
+      `SELECT u.id, u.email, u.role, u.name, u.is_active,
+         tm.team_id, ct.registration_status
+       FROM users u
+       LEFT JOIN LATERAL (
+         SELECT team_id FROM team_members
+         WHERE user_id = u.id AND team_id = $2
+         LIMIT 1
+       ) tm ON TRUE
+       LEFT JOIN college_teams ct ON ct.id = tm.team_id
+       WHERE u.id = $1`,
+      [decoded.userId, decoded.teamId || null],
     );
 
     if (userResult.rowCount === 0 || !userResult.rows[0].is_active) {
@@ -37,12 +52,13 @@ export const authMiddleware = async (req, res, next) => {
       email: userResult.rows[0].email,
       role: userResult.rows[0].role,
       name: userResult.rows[0].name,
-      teamId: decoded.teamId || null,
+      teamId: userResult.rows[0].team_id || null,
+      registrationStatus: userResult.rows[0].registration_status || null,
     };
 
     return next();
   } catch (error) {
-    return errorResponse(res, "Invalid or expired token", 401, "INVALID_TOKEN");
+    return next(error);
   }
 };
 
@@ -76,25 +92,13 @@ export const requireApprovedTeam = async (req, res, next) => {
   if (!req.user?.teamId) {
     return errorResponse(res, "Team context required", 403, "TEAM_REQUIRED");
   }
-
-  try {
-    const result = await query(
-      "SELECT registration_status FROM college_teams WHERE id = $1",
-      [req.user.teamId],
+  if (req.user.registrationStatus !== "CONFIRMED") {
+    return errorResponse(
+      res,
+      TEAM_APPROVAL_REQUIRED_MESSAGE,
+      403,
+      "TEAM_PAYMENT_NOT_APPROVED",
     );
-    if (
-      result.rowCount === 0 ||
-      result.rows[0].registration_status !== "CONFIRMED"
-    ) {
-      return errorResponse(
-        res,
-        TEAM_APPROVAL_REQUIRED_MESSAGE,
-        403,
-        "TEAM_PAYMENT_NOT_APPROVED",
-      );
-    }
-    return next();
-  } catch (error) {
-    return next(error);
   }
+  return next();
 };

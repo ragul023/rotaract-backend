@@ -16,14 +16,20 @@ import tradeRoutes from "./routes/tradeRoutes.js";
 
 import { query } from "./database/connection.js";
 
-import {
-  errorResponse,
-  successResponse,
-} from "./utils/response.js";
+import { errorResponse, successResponse } from "./utils/response.js";
 
 import { attachSocketHandlers } from "./socket/index.js";
 
 const app = express();
+app.set("trust proxy", env.NODE_ENV === "production" ? 1 : false);
+
+const corsOrigin = (origin, callback) => {
+  if (!origin || env.CLIENT_URLS.includes(origin)) {
+    return callback(null, true);
+  }
+  console.warn(`Rejected cross-origin request from ${origin}`);
+  return callback(null, false);
+};
 
 /*
 |--------------------------------------------------------------------------
@@ -41,7 +47,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: env.CLIENT_URL,
+    origin: corsOrigin,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -62,10 +68,11 @@ app.use(helmet());
 
 app.use(
   cors({
-    origin: env.CLIENT_URL,
+    origin: corsOrigin,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  })
+    maxAge: 600,
+  }),
 );
 
 app.use(express.json({ limit: "2mb" }));
@@ -73,7 +80,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(
   express.urlencoded({
     extended: true,
-  })
+  }),
 );
 
 app.use(
@@ -82,7 +89,7 @@ app.use(
     max: 300,
     standardHeaders: true,
     legacyHeaders: false,
-  })
+  }),
 );
 
 /*
@@ -102,12 +109,7 @@ app.get("/api/health", async (_req, res) => {
   } catch (error) {
     console.error("Health check DB error:", error);
 
-    return errorResponse(
-      res,
-      "DB unavailable",
-      500,
-      "DB_UNAVAILABLE"
-    );
+    return errorResponse(res, "DB unavailable", 500, "DB_UNAVAILABLE");
   }
 });
 
@@ -146,20 +148,11 @@ io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
   socket.on("disconnect", (reason) => {
-    console.log(
-      "Socket disconnected:",
-      socket.id,
-      "Reason:",
-      reason
-    );
+    console.log("Socket disconnected:", socket.id, "Reason:", reason);
   });
 
   socket.on("error", (error) => {
-    console.error(
-      "Socket error:",
-      socket.id,
-      error
-    );
+    console.error("Socket error:", socket.id, error);
   });
 });
 
@@ -185,7 +178,7 @@ app.use((err, _req, res, _next) => {
       res,
       err.message || "Server error",
       500,
-      "SERVER_ERROR"
+      "SERVER_ERROR",
     );
   }
 

@@ -14,10 +14,35 @@ for (const envPath of candidatePaths) {
   dotenv.config({ path: envPath });
 }
 
+const normalizeOrigin = (origin) => {
+  try {
+    return new URL(origin.trim()).origin;
+  } catch {
+    return null;
+  }
+};
+const configuredClientOrigins = (
+  process.env.CLIENT_URLS ||
+  process.env.CLIENT_URL ||
+  ""
+)
+  .split(",")
+  .map(normalizeOrigin)
+  .filter(Boolean);
+const clientOrigins = [
+  ...new Set([
+    ...configuredClientOrigins,
+    "https://rotaract-ipl.vercel.app",
+    "http://localhost:5175",
+    "http://localhost:5173",
+  ]),
+];
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
-  PORT: Number(process.env.PORT || 5000),
-  CLIENT_URL: process.env.CLIENT_URL || "http://localhost:5173",
+  PORT: Number(process.env.PORT || 5002),
+  CLIENT_URL: configuredClientOrigins[0] || "http://localhost:5175",
+  CLIENT_URLS: clientOrigins,
   DATABASE_URL:
     process.env.DATABASE_URL ||
     "postgresql://postgres:postgres@localhost:5432/rotaract_ipl",

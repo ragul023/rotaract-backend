@@ -12,10 +12,12 @@ export const signToken = (user, teamId = null) =>
     { expiresIn: "1d" },
   );
 
-export const signRefreshToken = (user) =>
-  jwt.sign({ userId: user.id, role: user.role }, env.JWT_REFRESH_SECRET, {
-    expiresIn: "1d",
-  });
+export const signRefreshToken = (user, teamId = null) =>
+  jwt.sign(
+    { userId: user.id, role: user.role, teamId },
+    env.JWT_REFRESH_SECRET,
+    { expiresIn: "1d" },
+  );
 
 export const hashPassword = async (password) => bcrypt.hash(password, 10);
 

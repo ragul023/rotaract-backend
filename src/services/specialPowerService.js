@@ -1,28 +1,32 @@
 import { query, withTransaction } from "../database/connection.js";
 
 const POWER_SUPER_STEAL = "SUPER_STEAL";
+const SUPER_STEAL_LIMIT = 3;
 
 export const getTeamPowerState = async (teamId) => {
-  const auctionResult = await query(
-    "SELECT id, status, current_player_id, current_bid, highest_bidder_team_id FROM auction ORDER BY created_at DESC LIMIT 1",
-  );
-  const teamResult = await query(
-    `SELECT ct.purse, w.available_purse, w.spent_purse
-     FROM college_teams ct JOIN wallets w ON w.team_id = ct.id
-     WHERE ct.id = $1`,
-    [teamId],
-  );
+  const [auctionResult, teamResult] = await Promise.all([
+    query(
+      "SELECT id, status, current_player_id, current_bid, highest_bidder_team_id FROM auction ORDER BY created_at DESC LIMIT 1",
+    ),
+    query(
+      `SELECT ct.purse, w.available_purse, w.spent_purse
+       FROM college_teams ct JOIN wallets w ON w.team_id = ct.id
+       WHERE ct.id = $1`,
+      [teamId],
+    ),
+  ]);
   if (teamResult.rowCount === 0) throw new Error("Team wallet not found");
 
   const auction = auctionResult.rows[0] || null;
-  const usedResult = auction
+  const usageResult = auction
     ? await query(
-        `SELECT power_key FROM team_power_uses
-         WHERE auction_id = $1 AND team_id = $2`,
-        [auction.id, teamId],
+        `SELECT COUNT(*)::int AS uses FROM team_power_uses
+         WHERE auction_id = $1 AND team_id = $2 AND power_key = $3`,
+        [auction.id, teamId, POWER_SUPER_STEAL],
       )
-    : { rows: [] };
-  const used = new Set(usedResult.rows.map((row) => row.power_key));
+    : { rows: [{ uses: 0 }] };
+  const superStealUses = usageResult.rows[0]?.uses || 0;
+  const superStealRemaining = Math.max(0, SUPER_STEAL_LIMIT - superStealUses);
   const team = teamResult.rows[0];
   const live =
     auction?.status === "BIDDING" && Boolean(auction.current_player_id);
@@ -34,13 +38,16 @@ export const getTeamPowerState = async (teamId) => {
     auctionId: auction?.id || null,
     threshold,
     availablePurse,
-    superStealUsed: used.has(POWER_SUPER_STEAL),
+    superStealUses,
+    superStealLimit: SUPER_STEAL_LIMIT,
+    superStealRemaining,
+    superStealUsed: superStealRemaining === 0,
     canSuperSteal:
       Boolean(live) &&
       currentBid >= threshold &&
       auction.highest_bidder_team_id !== teamId &&
       currentBid <= availablePurse &&
-      !used.has(POWER_SUPER_STEAL),
+      superStealRemaining > 0,
   };
 };
 
@@ -80,6 +87,15 @@ export const useSuperSteal = async ({ teamId, actorId, playerId }) =>
       throw new Error(
         "Super Steal unlocks when the bid reaches half your purse",
       );
+    }
+    const usageResult = await client.query(
+      `SELECT COUNT(*)::int AS uses FROM team_power_uses
+       WHERE auction_id = $1 AND team_id = $2 AND power_key = $3`,
+      [auction.id, teamId, POWER_SUPER_STEAL],
+    );
+    const superStealUses = usageResult.rows[0].uses;
+    if (superStealUses >= SUPER_STEAL_LIMIT) {
+      throw new Error("Your team has used all 3 Super Steals this auction");
     }
 
     const walletResult = await client.query(
@@ -167,5 +183,7 @@ export const useSuperSteal = async ({ teamId, actorId, playerId }) =>
       teamName: team.name,
       playerId,
       amount: currentBid,
+      superStealUses: superStealUses + 1,
+      superStealRemaining: SUPER_STEAL_LIMIT - superStealUses - 1,
     };
   });

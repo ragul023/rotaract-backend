@@ -113,9 +113,6 @@ router.get("/me", authMiddleware, async (req, res) => {
     "SELECT ct.* FROM college_teams ct JOIN team_members tm ON tm.team_id = ct.id WHERE tm.user_id = $1 LIMIT 1",
     [req.user.id],
   );
-  const walletResult = await query("SELECT * FROM wallets WHERE team_id = $1", [
-    teamResult.rows[0]?.id || null,
-  ]);
   const teamId = teamResult.rows[0]?.id || null;
   const team = teamResult.rows[0]
     ? {
@@ -126,28 +123,29 @@ router.get("/me", authMiddleware, async (req, res) => {
             : null,
       }
     : null;
-  const members = teamId
-    ? await query(
-        `SELECT id, name, is_leader FROM team_members
-         WHERE team_id = $1 ORDER BY is_leader DESC, created_at`,
-        [teamId],
-      )
-    : { rows: [] };
-  const squad = teamId
-    ? await query(
-        `SELECT p.id AS player_id, p.name, p.display_name, p.photo,
-           p.country, p.role, p.is_captain, p.is_overseas,
-            f.name AS franchise_name, s.acquired_price, s.created_at AS acquired_at,
-            s.is_playing_xi
-         FROM squads s
-         JOIN players p ON p.id = s.player_id
-         LEFT JOIN ipl_franchises f ON f.id = p.franchise_id
-         WHERE s.team_id = $1
-         ORDER BY s.created_at, p.name`,
-        [teamId],
-      )
-    : { rows: [] };
-  const powers = teamId ? await getTeamPowerState(teamId) : null;
+  const [walletResult, members, squad, powers] = teamId
+    ? await Promise.all([
+        query("SELECT * FROM wallets WHERE team_id = $1", [teamId]),
+        query(
+          `SELECT id, name, is_leader FROM team_members
+           WHERE team_id = $1 ORDER BY is_leader DESC, created_at`,
+          [teamId],
+        ),
+        query(
+          `SELECT p.id AS player_id, p.name, p.display_name, p.photo,
+             p.country, p.role, p.is_captain, p.is_overseas,
+             f.name AS franchise_name, s.acquired_price,
+             s.created_at AS acquired_at, s.is_playing_xi
+           FROM squads s
+           JOIN players p ON p.id = s.player_id
+           LEFT JOIN ipl_franchises f ON f.id = p.franchise_id
+           WHERE s.team_id = $1
+           ORDER BY s.created_at, p.name`,
+          [teamId],
+        ),
+        getTeamPowerState(teamId),
+      ])
+    : [{ rows: [] }, { rows: [] }, { rows: [] }, null];
   return successResponse(res, {
     team,
     wallet: walletResult.rows[0] || null,
@@ -171,15 +169,13 @@ router.put(
       }
       await withTransaction(async (client) => {
         const auction = await client.query(
-          "SELECT status FROM auction ORDER BY created_at DESC LIMIT 1",
+          "SELECT status FROM auction ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
         );
         if (
-          !auction.rowCount ||
-          !["AUCTION_COMPLETED", "FINISHED"].includes(auction.rows[0].status)
+          auction.rowCount > 0 &&
+          ["AUCTION_COMPLETED", "FINISHED"].includes(auction.rows[0].status)
         ) {
-          throw new Error(
-            "You can fix your playing XI after the auction is complete",
-          );
+          throw new Error("Playing XI is locked after the auction is finished");
         }
         const team = await client.query(
           "SELECT id, playing_xi_locked FROM college_teams WHERE id = $1 AND status = 'ACTIVE' FOR UPDATE",

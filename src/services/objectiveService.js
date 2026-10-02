@@ -264,9 +264,6 @@ export const resetAssignments = async ({ actorId }) =>
       "DELETE FROM secret_assignments RETURNING team_id",
     );
     await client.query("DELETE FROM scores");
-    await client.query(
-      "UPDATE college_teams SET playing_xi_locked = FALSE WHERE status = 'ACTIVE'",
-    );
     await recordAudit(client, actorId, "ASSIGNMENTS_RESET", null, {
       removed: deleted.rowCount,
     });

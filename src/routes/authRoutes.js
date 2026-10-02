@@ -46,7 +46,7 @@ router.post("/register", async (req, res) => {
       result.userId,
     ]);
     const accessToken = signToken(user.rows[0], result.teamId);
-    const refreshToken = signRefreshToken(user.rows[0]);
+    const refreshToken = signRefreshToken(user.rows[0], result.teamId);
 
     return successResponse(
       res,
@@ -105,7 +105,7 @@ router.post("/login", async (req, res) => {
     const teamId = teamMember.rowCount > 0 ? teamMember.rows[0].team_id : null;
 
     const accessToken = signToken(user, teamId);
-    const refreshToken = signRefreshToken(user);
+    const refreshToken = signRefreshToken(user, teamId);
 
     return successResponse(res, {
       user: { ...user, password_hash: undefined },
@@ -131,7 +131,7 @@ router.post("/join-team", async (req, res) => {
       payload.email,
     ]);
     const accessToken = signToken(user.rows[0], result.teamId);
-    const refreshToken = signRefreshToken(user.rows[0]);
+    const refreshToken = signRefreshToken(user.rows[0], result.teamId);
 
     return successResponse(
       res,
@@ -158,23 +158,44 @@ router.post("/logout", authMiddleware, async (_req, res) => {
 });
 
 router.get("/me", authMiddleware, async (req, res) => {
-  const userResult = await query("SELECT * FROM users WHERE id = $1", [
-    req.user.id,
-  ]);
-  const teamResult = await query(
-    "SELECT * FROM college_teams WHERE leader_id = $1 LIMIT 1",
+  const result = await query(
+    `SELECT u.id, u.email, u.role, u.name, u.is_active,
+       tm.team_id,
+       CASE WHEN ct.id IS NULL THEN NULL ELSE jsonb_build_object(
+         'id', ct.id,
+         'name', ct.name,
+         'code', CASE WHEN ct.registration_status = 'CONFIRMED' THEN ct.code END,
+         'registration_status', ct.registration_status,
+         'status', ct.status,
+         'purse', ct.purse,
+         'spent', ct.spent,
+         'is_captain', ct.leader_id = u.id
+       ) END AS team
+     FROM users u
+     LEFT JOIN LATERAL (
+       SELECT team_id FROM team_members
+       WHERE user_id = u.id
+       ORDER BY is_leader DESC, created_at
+       LIMIT 1
+     ) tm ON TRUE
+     LEFT JOIN college_teams ct ON ct.id = tm.team_id
+     WHERE u.id = $1`,
     [req.user.id],
   );
-  const teamMemberResult = await query(
-    "SELECT team_id FROM team_members WHERE user_id = $1 LIMIT 1",
-    [req.user.id],
-  );
-
+  if (result.rowCount === 0) {
+    return errorResponse(res, "User not found", 404, "USER_NOT_FOUND");
+  }
+  const row = result.rows[0];
   return successResponse(res, {
-    user: { ...userResult.rows[0], password_hash: undefined },
-    team: teamResult.rowCount > 0 ? teamResult.rows[0] : null,
-    teamId:
-      teamMemberResult.rowCount > 0 ? teamMemberResult.rows[0].team_id : null,
+    user: {
+      id: row.id,
+      email: row.email,
+      role: row.role,
+      name: row.name,
+      is_active: row.is_active,
+    },
+    team: row.team,
+    teamId: row.team_id,
   });
 });
 
@@ -188,21 +209,45 @@ router.post("/refresh", async (req, res) => {
       "REFRESH_REQUIRED",
     );
 
+  let decoded;
   try {
-    const decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET);
-    const userResult = await query("SELECT * FROM users WHERE id = $1", [
-      decoded.userId,
-    ]);
-    if (userResult.rowCount === 0)
-      return errorResponse(res, "Session expired", 401, "SESSION_EXPIRED");
-    const accessToken = signToken(userResult.rows[0], decoded.teamId || null);
-    return successResponse(res, { accessToken });
+    decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET);
   } catch (_error) {
     return errorResponse(
       res,
       "Refresh token invalid",
       401,
       "INVALID_REFRESH_TOKEN",
+    );
+  }
+
+  try {
+    const userResult = await query(
+      `SELECT u.id, u.email, u.role, u.name, u.is_active,
+         (SELECT team_id FROM team_members
+          WHERE user_id = u.id
+          ORDER BY is_leader DESC, created_at LIMIT 1) AS team_id
+       FROM users u WHERE u.id = $1`,
+      [decoded.userId],
+    );
+    if (userResult.rowCount === 0 || !userResult.rows[0].is_active) {
+      return errorResponse(res, "Session expired", 401, "SESSION_EXPIRED");
+    }
+    const user = userResult.rows[0];
+    const accessToken = signToken(user, user.team_id || null);
+    const nextRefreshToken = signRefreshToken(user, user.team_id || null);
+    return successResponse(res, {
+      accessToken,
+      refreshToken: nextRefreshToken,
+      teamId: user.team_id || null,
+    });
+  } catch (error) {
+    console.error("Session refresh database error:", error);
+    return errorResponse(
+      res,
+      "Session service is temporarily unavailable",
+      503,
+      "SESSION_SERVICE_UNAVAILABLE",
     );
   }
 });
