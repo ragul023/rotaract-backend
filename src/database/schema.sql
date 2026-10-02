@@ -190,6 +190,8 @@ CREATE TABLE IF NOT EXISTS trade_offers (
   to_team_id UUID NOT NULL REFERENCES college_teams(id) ON DELETE CASCADE,
   offered_player_id UUID NOT NULL REFERENCES players(id),
   requested_player_id UUID NOT NULL REFERENCES players(id),
+  cash_amount NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (cash_amount >= 0),
+  buyer_acknowledged_at TIMESTAMPTZ DEFAULT NOW(),
   status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
     CHECK (status IN ('PENDING', 'ACCEPTED', 'DECLINED', 'CANCELLED')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -197,6 +199,42 @@ CREATE TABLE IF NOT EXISTS trade_offers (
   CHECK (from_team_id <> to_team_id),
   CHECK (offered_player_id <> requested_player_id)
 );
+ALTER TABLE trade_offers
+  ADD COLUMN IF NOT EXISTS cash_amount NUMERIC(10,2) NOT NULL DEFAULT 0
+  CHECK (cash_amount >= 0);
+ALTER TABLE trade_offers
+  ADD COLUMN IF NOT EXISTS buyer_acknowledged_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE trade_offers
+  ALTER COLUMN buyer_acknowledged_at SET DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS player_listings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  seller_team_id UUID NOT NULL REFERENCES college_teams(id) ON DELETE CASCADE,
+  player_id UUID NOT NULL REFERENCES players(id),
+  asking_price NUMERIC(10,2) NOT NULL CHECK (asking_price > 0),
+  status VARCHAR(20) NOT NULL DEFAULT 'OPEN'
+    CHECK (status IN ('OPEN', 'SOLD', 'CANCELLED')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS player_listings_one_open_per_player
+  ON player_listings(player_id) WHERE status = 'OPEN';
+
+CREATE TABLE IF NOT EXISTS player_purchase_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id UUID NOT NULL REFERENCES player_listings(id) ON DELETE CASCADE,
+  buyer_team_id UUID NOT NULL REFERENCES college_teams(id) ON DELETE CASCADE,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+    CHECK (status IN ('PENDING', 'ACCEPTED', 'DECLINED', 'CANCELLED')),
+  buyer_acknowledged_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS player_purchase_requests_one_pending
+  ON player_purchase_requests(listing_id, buyer_team_id)
+  WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS player_purchase_requests_buyer_queue
+  ON player_purchase_requests(buyer_team_id, buyer_acknowledged_at, created_at);
 
 CREATE TABLE IF NOT EXISTS team_power_uses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
