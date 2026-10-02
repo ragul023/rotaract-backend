@@ -5,31 +5,39 @@ const { Pool } = pg;
 
 export const pool = new Pool({
   connectionString: env.DATABASE_URL,
-  ssl: env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+  ssl: env.NODE_ENV === "production"
+    ? { rejectUnauthorized: false }
+    : false,
+  options: "-c search_path=public",
 });
 
 pool.query(`
-    SELECT
-        current_database() AS database,
-        current_user AS user,
-        current_schema() AS schema,
-        current_setting('search_path') AS search_path
+  SELECT
+    current_database() AS database,
+    current_user AS user,
+    current_schema() AS schema,
+    current_setting('search_path') AS search_path
 `)
 .then(result => {
-    console.log("DATABASE INFO:", result.rows[0]);
+  console.log("DATABASE INFO:", result.rows[0]);
 })
 .catch(err => {
-    console.error("DATABASE INFO ERROR:", err);
+  console.error("DATABASE INFO ERROR:", err);
 });
 
-export const query = (text, params = []) => pool.query(text, params);
+export const query = (text, params = []) =>
+  pool.query(text, params);
 
 export const withTransaction = async (callback) => {
   const client = await pool.connect();
+
   try {
     await client.query("BEGIN");
+
     const result = await callback(client);
+
     await client.query("COMMIT");
+
     return result;
   } catch (error) {
     await client.query("ROLLBACK");
