@@ -168,15 +168,6 @@ router.put(
         throw new Error("Choose 11 different players for your playing XI");
       }
       await withTransaction(async (client) => {
-        const auction = await client.query(
-          "SELECT status FROM auction ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
-        );
-        if (
-          auction.rowCount > 0 &&
-          ["AUCTION_COMPLETED", "FINISHED"].includes(auction.rows[0].status)
-        ) {
-          throw new Error("Playing XI is locked after the auction is finished");
-        }
         const team = await client.query(
           "SELECT id, playing_xi_locked FROM college_teams WHERE id = $1 AND status = 'ACTIVE' FOR UPDATE",
           [req.user.teamId],
