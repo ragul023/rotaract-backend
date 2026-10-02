@@ -28,6 +28,7 @@ export const createTeam = async ({
   teamName,
   leaderName,
   leaderEmail,
+  leaderPhone,
   leaderRegisterNumber,
   department,
   password,
@@ -48,8 +49,8 @@ export const createTeam = async ({
     }
 
     await client.query(
-      `INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'PARTICIPANT', $4)`,
-      [userId, leaderEmail, passwordHash, leaderName],
+      `INSERT INTO users (id, email, password_hash, role, name, phone) VALUES ($1, $2, $3, 'PARTICIPANT', $4, $5)`,
+      [userId, leaderEmail, passwordHash, leaderName, leaderPhone],
     );
 
     await client.query(

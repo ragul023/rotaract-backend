@@ -36,10 +36,13 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role user_role NOT NULL DEFAULT 'PARTICIPANT',
   name VARCHAR(255) NOT NULL,
+  phone VARCHAR(30),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
 
 CREATE TABLE IF NOT EXISTS college_teams (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -73,6 +76,19 @@ CREATE TABLE IF NOT EXISTS team_members (
   UNIQUE(team_id, email),
   UNIQUE(team_id, register_number)
 );
+
+CREATE TABLE IF NOT EXISTS team_chat_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID NOT NULL REFERENCES college_teams(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  team_name VARCHAR(255) NOT NULL,
+  sender_name VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL CHECK (char_length(message) BETWEEN 1 AND 500),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_chat_messages_created_at
+  ON team_chat_messages(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS team_registration_payments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

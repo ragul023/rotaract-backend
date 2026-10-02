@@ -44,7 +44,8 @@ export const getAdminRegistrations = async () => {
        ct.name AS team_name,
       ct.registration_status, ct.created_at, 'IPL AUCTION' AS event_name,
       leader.name AS captain_name,
-      leader.email AS captain_email, COUNT(DISTINCT m.id)::int AS team_size,
+      leader.email AS captain_email, leader.phone AS captain_phone,
+      COUNT(DISTINCT m.id)::int AS team_size,
        p.amount, p.currency, p.payment_method, p.payment_reference,
        p.payment_status,
        COALESCE(json_agg(json_build_object(

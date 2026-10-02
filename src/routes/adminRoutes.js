@@ -380,7 +380,7 @@ router.put(
 router.post(
   "/registrations/:registrationId/verify",
   authMiddleware,
-  requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
+  requireRole("SUPER_ADMIN"),
   async (req, res) => {
     try {
       const teamId = z.string().uuid().parse(req.params.registrationId);
@@ -407,7 +407,7 @@ router.post(
 router.post(
   "/registrations/:registrationId/reject",
   authMiddleware,
-  requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
+  requireRole("SUPER_ADMIN"),
   async (req, res) => {
     try {
       const teamId = z.string().uuid().parse(req.params.registrationId);

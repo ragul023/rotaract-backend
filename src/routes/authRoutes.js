@@ -19,6 +19,7 @@ const registerSchema = z.object({
   teamName: z.string().min(2),
   leaderName: z.string().min(2),
   leaderEmail: z.string().email(),
+  leaderPhone: z.string().trim().regex(/^\+?[0-9\s()-]{7,20}$/, "Enter a valid mobile number"),
   leaderRegisterNumber: z.string().min(2),
   department: z.string().min(2),
   password: z.string().min(6),

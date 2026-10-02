@@ -127,7 +127,7 @@ router.get("/me", authMiddleware, async (req, res) => {
     ? await Promise.all([
         query("SELECT * FROM wallets WHERE team_id = $1", [teamId]),
         query(
-          `SELECT id, name, is_leader FROM team_members
+          `SELECT id, user_id, name, is_leader FROM team_members
            WHERE team_id = $1 ORDER BY is_leader DESC, created_at`,
           [teamId],
         ),

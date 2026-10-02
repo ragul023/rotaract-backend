@@ -84,15 +84,21 @@ export const attachSocketHandlers = (io) => {
       const result = await query(
         `
         SELECT
-          id,
-          email,
-          role,
-          name
-        FROM users
-        WHERE id = $1
+          u.id,
+          u.email,
+          u.role,
+          u.name,
+          tm.team_id,
+          tm.is_leader,
+          ct.name AS team_name
+        FROM users u
+        LEFT JOIN team_members tm
+          ON tm.user_id = u.id AND tm.team_id = $2
+        LEFT JOIN college_teams ct ON ct.id = tm.team_id
+        WHERE u.id = $1
         LIMIT 1
         `,
-        [decoded.userId]
+        [decoded.userId, decoded.teamId || null]
       );
 
 
@@ -106,9 +112,8 @@ export const attachSocketHandlers = (io) => {
 
       socket.user = {
         ...result.rows[0],
-
-        teamId:
-          decoded.teamId || null,
+        teamId: result.rows[0].team_id || null,
+        isLeader: Boolean(result.rows[0].is_leader),
       };
 
 
@@ -135,6 +140,50 @@ export const attachSocketHandlers = (io) => {
   */
 
   io.on("connection", (socket) => {
+
+    socket.on("team_chat_history", async (ack) => {
+      const isSuperAdmin = socket.user.role === "SUPER_ADMIN";
+      const isTeamLeader = socket.user.role === "PARTICIPANT" && socket.user.isLeader && socket.user.teamId;
+      if (!isSuperAdmin && !isTeamLeader) {
+        return typeof ack === "function" && ack({ success: false, message: "Only team leaders can access team chat" });
+      }
+      try {
+        const messages = await query(
+          `SELECT id, team_name AS "teamName", sender_name AS "senderName",
+                  message, created_at AS "createdAt"
+           FROM team_chat_messages ORDER BY created_at DESC LIMIT 100`
+        );
+        if (typeof ack === "function") ack({ success: true, messages: messages.rows.reverse() });
+      } catch (error) {
+        console.error("[TEAM CHAT HISTORY ERROR]", error);
+        if (typeof ack === "function") ack({ success: false, message: "Unable to load chat" });
+      }
+    });
+
+    socket.on("team_chat_send", async (payload, ack) => {
+      if (socket.user.role !== "PARTICIPANT" || !socket.user.isLeader || !socket.user.teamId) {
+        return typeof ack === "function" && ack({ success: false, message: "Only team leaders can send messages" });
+      }
+      const message = typeof payload?.message === "string" ? payload.message.trim() : "";
+      if (!message || message.length > 500) {
+        return typeof ack === "function" && ack({ success: false, message: "Message must be 1–500 characters" });
+      }
+      try {
+        const result = await query(
+          `INSERT INTO team_chat_messages (team_id, user_id, team_name, sender_name, message)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, team_name AS "teamName", sender_name AS "senderName",
+                     message, created_at AS "createdAt"`,
+          [socket.user.teamId, socket.user.id, socket.user.team_name, socket.user.name, message]
+        );
+        const chatMessage = result.rows[0];
+        io.emit("team_chat_message", chatMessage);
+        if (typeof ack === "function") ack({ success: true, message: chatMessage });
+      } catch (error) {
+        console.error("[TEAM CHAT SEND ERROR]", error);
+        if (typeof ack === "function") ack({ success: false, message: "Unable to send message" });
+      }
+    });
 
     console.log(
       `[SOCKET] Authenticated user connected: ${socket.id}`,

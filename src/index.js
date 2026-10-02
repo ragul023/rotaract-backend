@@ -47,13 +47,20 @@ app.set(
 |--------------------------------------------------------------------------
 */
 
-const allowedOrigins = [
-  "https://rotaract-ipl.vercel.app",
+const allowedOrigins = new Set(env.CLIENT_URLS);
 
-  // Local development
-  "http://localhost:5173",
-  "http://localhost:3000",
-];
+const isLocalDevelopmentOrigin = (origin) => {
+  if (env.NODE_ENV === "production") return false;
+  try {
+    const parsed = new URL(origin);
+    return (
+      parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+};
 
 /*
 |--------------------------------------------------------------------------
@@ -75,7 +82,7 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    if (allowedOrigins.includes(origin)) {
+    if (allowedOrigins.has(origin) || isLocalDevelopmentOrigin(origin)) {
       return callback(null, true);
     }
 
