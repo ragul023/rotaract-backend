@@ -186,25 +186,38 @@ router.post(
       const cards = ["memberCard1", "memberCard2", "memberCard3"].map(
         (key) => req.files?.[key]?.[0] || null,
       );
-      if (enabled && cards.some((card) => !card)) {
-        throw new Error("Upload membership cards for all three member slots");
+      const feeResult = await query(
+        "SELECT value FROM game_settings WHERE key = 'event_registration_fee'",
+      );
+      const regularAmount = feeResult.rowCount ? Number(feeResult.rows[0].value) : null;
+      if (!enabled && (!Number.isFinite(regularAmount) || regularAmount <= 0)) {
+        throw new Error("Registration fee has not been set by an administrator");
       }
       const payment = await query(
         `UPDATE team_registration_payments p
          SET membership_privilege = $2,
-             membership_card_1 = $3, membership_card_1_type = $4,
-             membership_card_2 = $5, membership_card_2_type = $6,
-             membership_card_3 = $7, membership_card_3_type = $8
+             amount = $3,
+             membership_card_1 = CASE WHEN NOT $2 THEN NULL ELSE COALESCE($4, p.membership_card_1) END,
+             membership_card_1_type = CASE WHEN NOT $2 THEN NULL ELSE COALESCE($5, p.membership_card_1_type) END,
+             membership_card_2 = CASE WHEN NOT $2 THEN NULL ELSE COALESCE($6, p.membership_card_2) END,
+             membership_card_2_type = CASE WHEN NOT $2 THEN NULL ELSE COALESCE($7, p.membership_card_2_type) END,
+             membership_card_3 = CASE WHEN NOT $2 THEN NULL ELSE COALESCE($8, p.membership_card_3) END,
+             membership_card_3_type = CASE WHEN NOT $2 THEN NULL ELSE COALESCE($9, p.membership_card_3_type) END
          FROM college_teams ct
          WHERE p.team_id = ct.id AND ct.leader_id = $1
-         RETURNING p.membership_privilege`,
-        [req.user.id, enabled,
-          enabled ? cards[0].buffer : null, enabled ? cards[0].mimetype : null,
-          enabled ? cards[1].buffer : null, enabled ? cards[1].mimetype : null,
-          enabled ? cards[2].buffer : null, enabled ? cards[2].mimetype : null],
+           AND p.payment_status IN ('PENDING', 'REJECTED')
+         RETURNING p.team_id, p.membership_privilege, p.amount`,
+        [req.user.id, enabled, enabled ? 30 : regularAmount,
+          cards[0]?.buffer || null, cards[0]?.mimetype || null,
+          cards[1]?.buffer || null, cards[1]?.mimetype || null,
+          cards[2]?.buffer || null, cards[2]?.mimetype || null],
       );
       if (!payment.rowCount) throw new Error("Create the team payment order first");
-      return successResponse(res, { membershipPrivilege: payment.rows[0].membership_privilege });
+      req.app.get("io")?.emit("team_registration_updated");
+      return successResponse(res, {
+        membershipPrivilege: payment.rows[0].membership_privilege,
+        amount: Number(payment.rows[0].amount),
+      });
     } catch (error) {
       return errorResponse(res, error.message || "Unable to save membership cards", 400, "MEMBERSHIP_UPLOAD_FAILED");
     }
