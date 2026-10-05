@@ -14,6 +14,7 @@ import {
   cancelTradeOffer,
   createTradeOffer,
   createPlayerListing,
+  getTradeRoom,
   getPlayerMarket,
   getTeamTradeOffers,
   getTradeWindow,
@@ -36,13 +37,27 @@ const listingSchema = z.object({
 const responseSchema = z.object({ accepted: z.boolean() });
 const uuidSchema = z.string().uuid();
 
-const emitMarketUpdate = (req, teamIds = []) => {
+const emitTradeUpdate = (req, teamIds = []) => {
   const io = req.app.get("io");
-  io?.to("auction-room").emit("trade_market_updated");
   for (const teamId of new Set(teamIds.filter(Boolean))) {
     io?.to(`team:${teamId}`).emit("trade_offer_updated");
   }
 };
+
+const emitMarketUpdate = (req, teamIds = []) => {
+  req.app.get("io")?.to("auction-room").emit("trade_market_updated");
+  emitTradeUpdate(req, teamIds);
+};
+
+router.get(
+  "/state",
+  authMiddleware,
+  requireRole("PARTICIPANT"),
+  requireTeamAccess,
+  requireApprovedTeam,
+  async (req, res) =>
+    successResponse(res, await getTradeRoom(req.user.teamId)),
+);
 
 router.get("/window", authMiddleware, async (_req, res) => {
   return successResponse(res, await getTradeWindow());
@@ -74,7 +89,7 @@ router.post(
         fromTeamId: req.user.teamId,
         ...payload,
       });
-      emitMarketUpdate(req, [req.user.teamId, payload.toTeamId]);
+      emitTradeUpdate(req, [req.user.teamId, payload.toTeamId]);
       return successResponse(res, { offer }, 201);
     } catch (error) {
       return errorResponse(
@@ -164,7 +179,7 @@ router.post(
         teamId: req.user.teamId,
         listingId,
       });
-      emitMarketUpdate(req, [request.buyer_team_id, request.seller_team_id]);
+      emitTradeUpdate(req, [request.buyer_team_id, request.seller_team_id]);
       return successResponse(res, { request }, 201);
     } catch (error) {
       return errorResponse(
@@ -193,10 +208,14 @@ router.post(
         accept: accepted,
       });
       if (request.expired) {
-        emitMarketUpdate(req, [request.seller_team_id, request.buyer_team_id]);
+        emitTradeUpdate(req, [request.seller_team_id, request.buyer_team_id]);
         return errorResponse(res, "This request expired and was automatically rejected", 410, "TRADE_REQUEST_EXPIRED");
       }
-      emitMarketUpdate(req, [request.seller_team_id, request.buyer_team_id]);
+      if (accepted) {
+        emitMarketUpdate(req, [request.seller_team_id, request.buyer_team_id]);
+      } else {
+        emitTradeUpdate(req, [request.seller_team_id, request.buyer_team_id]);
+      }
       if (accepted)
         req.app.get("io")?.to("auction-room").emit("team_rosters_updated");
       return successResponse(res, { request });
@@ -283,7 +302,7 @@ router.post(
         return errorResponse(res, "This request expired and was automatically rejected", 410, "TRADE_REQUEST_EXPIRED");
       }
       const io = req.app.get("io");
-      emitMarketUpdate(req, [offer.from_team_id, offer.to_team_id]);
+      emitTradeUpdate(req, [offer.from_team_id, offer.to_team_id]);
       if (accepted) io?.to("auction-room").emit("team_rosters_updated");
       return successResponse(res, { offer });
     } catch (error) {
@@ -335,10 +354,7 @@ router.delete(
         teamId: req.user.teamId,
         offerId,
       });
-      req.app
-        .get("io")
-        ?.to(`team:${offer.to_team_id}`)
-        .emit("trade_offer_updated");
+      emitTradeUpdate(req, [offer.from_team_id, offer.to_team_id]);
       return successResponse(res, { offer });
     } catch (error) {
       return errorResponse(

@@ -108,7 +108,6 @@ export const getPlayerMarket = async (teamId) => {
        JOIN players p ON p.id = pl.player_id
       WHERE pl.status = 'OPEN'
        ORDER BY pl.created_at, pl.id`,
-      [teamId],
     ),
     query(
       `SELECT pr.id, pr.listing_id, pr.buyer_team_id,
@@ -128,6 +127,15 @@ export const getPlayerMarket = async (teamId) => {
     ),
   ]);
   return { listings: listings.rows, requests: requests.rows };
+};
+
+export const getTradeRoom = async (teamId) => {
+  const [window, offers, market] = await Promise.all([
+    getTradeWindow(),
+    getTeamTradeOffers(teamId),
+    getPlayerMarket(teamId),
+  ]);
+  return { ...window, offers, market };
 };
 
 const requireTradeWindow = async (client) => {
