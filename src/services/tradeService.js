@@ -14,6 +14,16 @@ export const getTradeWindow = async () => {
   return { open: result.rows[0]?.value === true };
 };
 
+export const expireTradeRequests = async () => {
+  const [offers, purchases] = await Promise.all([
+    query(`UPDATE trade_offers SET status = 'DECLINED', buyer_acknowledged_at = NULL,
+      updated_at = NOW() WHERE status = 'PENDING' AND expires_at <= NOW() RETURNING id`),
+    query(`UPDATE player_purchase_requests SET status = 'DECLINED', buyer_acknowledged_at = NULL,
+      updated_at = NOW() WHERE status = 'PENDING' AND expires_at <= NOW() RETURNING id`),
+  ]);
+  return offers.rowCount + purchases.rowCount;
+};
+
 export const setTradeWindow = async ({ actorId, open }) =>
   withTransaction(async (client) => {
     await client.query(
@@ -21,6 +31,16 @@ export const setTradeWindow = async ({ actorId, open }) =>
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
       [JSON.stringify(open)],
     );
+    if (!open) {
+      await client.query(
+        `UPDATE trade_offers SET status = 'DECLINED', buyer_acknowledged_at = NULL, updated_at = NOW()
+         WHERE status = 'PENDING'`,
+      );
+      await client.query(
+        `UPDATE player_purchase_requests SET status = 'DECLINED', buyer_acknowledged_at = NULL, updated_at = NOW()
+         WHERE status = 'PENDING'`,
+      );
+    }
     await client.query(
       `INSERT INTO audit_logs (actor_user_id, action, new_value)
        VALUES ($1, 'TRADE_WINDOW_UPDATED', $2::jsonb)`,
@@ -57,7 +77,7 @@ export const getTeamRosters = async () => {
 
 export const getTeamTradeOffers = async (teamId) => {
   const result = await query(
-    `SELECT tr.id, tr.from_team_id, tr.to_team_id, tr.status, tr.created_at,
+    `SELECT tr.id, tr.from_team_id, tr.to_team_id, tr.status, tr.created_at, tr.expires_at,
        tr.cash_amount, tr.buyer_acknowledged_at,
        sender.name AS from_team_name, recipient.name AS to_team_name,
        offered.id AS offered_player_id, offered.display_name AS offered_player_name,
@@ -70,7 +90,7 @@ export const getTeamTradeOffers = async (teamId) => {
      JOIN players offered ON offered.id = tr.offered_player_id
      JOIN players requested ON requested.id = tr.requested_player_id
      WHERE tr.from_team_id = $1 OR tr.to_team_id = $1
-     ORDER BY tr.created_at DESC LIMIT 100`,
+       ORDER BY tr.created_at DESC`,
     [teamId],
   );
   return result.rows;
@@ -87,7 +107,7 @@ export const getPlayerMarket = async (teamId) => {
        JOIN college_teams seller ON seller.id = pl.seller_team_id
        JOIN players p ON p.id = pl.player_id
       WHERE pl.status = 'OPEN'
-       ORDER BY pl.created_at, pl.id LIMIT 100`,
+       ORDER BY pl.created_at, pl.id`,
       [teamId],
     ),
     query(
@@ -96,14 +116,14 @@ export const getPlayerMarket = async (teamId) => {
          seller.name AS seller_team_name, pl.player_id,
          COALESCE(p.display_name, p.name) AS player_name,
          p.photo AS player_photo, pl.asking_price, pr.status,
-         pr.buyer_acknowledged_at, pr.created_at, pr.updated_at
+         pr.buyer_acknowledged_at, pr.created_at, pr.updated_at, pr.expires_at
        FROM player_purchase_requests pr
        JOIN player_listings pl ON pl.id = pr.listing_id
        JOIN college_teams buyer ON buyer.id = pr.buyer_team_id
        JOIN college_teams seller ON seller.id = pl.seller_team_id
        JOIN players p ON p.id = pl.player_id
        WHERE pr.buyer_team_id = $1 OR pl.seller_team_id = $1
-       ORDER BY pr.created_at, pr.id LIMIT 200`,
+       ORDER BY pr.created_at, pr.id`,
       [teamId],
     ),
   ]);
@@ -202,6 +222,21 @@ export const requestPlayerPurchase = async ({ teamId, listingId }) =>
     if (Number(wallet.rows[0].available_purse) < Number(sale.asking_price)) {
       throw new Error("Your available purse is below the asking price");
     }
+    const reserved = await client.query(
+      `SELECT COALESCE(SUM(reserved_amount), 0) AS amount FROM (
+         SELECT cash_amount AS reserved_amount FROM trade_offers
+         WHERE from_team_id = $1 AND status = 'PENDING' AND expires_at > NOW()
+         UNION ALL
+         SELECT pl.asking_price FROM player_purchase_requests pr
+         JOIN player_listings pl ON pl.id = pr.listing_id
+         WHERE pr.buyer_team_id = $1 AND pr.status = 'PENDING'
+           AND pr.expires_at > NOW() AND pl.status = 'OPEN'
+       ) pending_commitments`,
+      [teamId],
+    );
+    if (Number(wallet.rows[0].available_purse) - Number(reserved.rows[0].amount) < Number(sale.asking_price)) {
+      throw new Error("Your available purse is already committed to other pending requests");
+    }
     const squad = await client.query(
       "SELECT COUNT(*)::int AS count FROM squads WHERE team_id = $1",
       [teamId],
@@ -247,6 +282,14 @@ export const respondToPurchaseRequest = async ({ teamId, requestId, accept }) =>
     }
     if (purchaseRequest.status !== "PENDING" || listing.status !== "OPEN") {
       throw new Error("This request is no longer pending");
+    }
+    if (new Date(purchaseRequest.expires_at).getTime() <= Date.now()) {
+      await client.query(
+        `UPDATE player_purchase_requests SET status = 'DECLINED',
+           buyer_acknowledged_at = NULL, updated_at = NOW() WHERE id = $1`,
+        [requestId],
+      );
+      return { expired: true, seller_team_id: teamId, buyer_team_id: purchaseRequest.buyer_team_id };
     }
 
     if (accept) {
@@ -313,12 +356,13 @@ export const respondToPurchaseRequest = async ({ teamId, requestId, accept }) =>
         [listing.seller_team_id, listing.asking_price],
       );
       await client.query(
-        `UPDATE squads SET team_id = $1, is_playing_xi = FALSE
+        `UPDATE squads SET team_id = $1, acquired_price = $4, is_playing_xi = FALSE
          WHERE team_id = $2 AND player_id = $3`,
         [
           purchaseRequest.buyer_team_id,
           listing.seller_team_id,
           listing.player_id,
+          listing.asking_price,
         ],
       );
       await client.query(
@@ -431,7 +475,19 @@ export const createTradeOffer = async ({
         [fromTeamId],
       );
       if (!wallet.rowCount) throw new Error("Offering team wallet not found");
-      if (Number(wallet.rows[0].available_purse) < cashAmount) {
+      const reserved = await client.query(
+        `SELECT COALESCE(SUM(reserved_amount), 0) AS amount FROM (
+           SELECT cash_amount AS reserved_amount FROM trade_offers
+           WHERE from_team_id = $1 AND status = 'PENDING' AND expires_at > NOW()
+           UNION ALL
+           SELECT pl.asking_price FROM player_purchase_requests pr
+           JOIN player_listings pl ON pl.id = pr.listing_id
+           WHERE pr.buyer_team_id = $1 AND pr.status = 'PENDING'
+             AND pr.expires_at > NOW() AND pl.status = 'OPEN'
+         ) pending_commitments`,
+        [fromTeamId],
+      );
+      if (Number(wallet.rows[0].available_purse) - Number(reserved.rows[0].amount) < cashAmount) {
         throw new Error("Your available purse cannot cover the cash offer");
       }
     }
@@ -477,6 +533,14 @@ export const respondToTradeOffer = async ({ teamId, offerId, accept }) =>
     }
     if (offer.status !== "PENDING") {
       throw new Error("This trade offer is no longer pending");
+    }
+    if (new Date(offer.expires_at).getTime() <= Date.now()) {
+      await client.query(
+        `UPDATE trade_offers SET status = 'DECLINED', buyer_acknowledged_at = NULL,
+           updated_at = NOW() WHERE id = $1`,
+        [offerId],
+      );
+      return { ...offer, status: "DECLINED", expired: true };
     }
 
     const status = accept ? "ACCEPTED" : "DECLINED";

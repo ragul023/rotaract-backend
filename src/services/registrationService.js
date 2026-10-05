@@ -14,7 +14,11 @@ export const getTeamRegistration = async (userId) => {
        CASE WHEN ct.registration_status = 'CONFIRMED' THEN ct.code END AS team_code,
        ct.leader_id = $1 AS is_captain, COUNT(tm.id)::int AS member_count,
        p.id AS payment_id, p.amount, p.currency, p.payment_status,
-       p.payment_reference, p.created_at AS payment_created_at
+       p.payment_reference, p.membership_privilege,
+       (p.membership_card_1 IS NOT NULL) AS membership_card_1_uploaded,
+       (p.membership_card_2 IS NOT NULL) AS membership_card_2_uploaded,
+       (p.membership_card_3 IS NOT NULL) AS membership_card_3_uploaded,
+       p.created_at AS payment_created_at
      FROM college_teams ct
      JOIN team_members captain_member ON captain_member.team_id = ct.id
        AND captain_member.user_id = $1
@@ -48,6 +52,10 @@ export const getAdminRegistrations = async () => {
       COUNT(DISTINCT m.id)::int AS team_size,
        p.amount, p.currency, p.payment_method, p.payment_reference,
        p.payment_status,
+       p.membership_privilege,
+       (p.membership_card_1 IS NOT NULL) AS membership_card_1_uploaded,
+       (p.membership_card_2 IS NOT NULL) AS membership_card_2_uploaded,
+       (p.membership_card_3 IS NOT NULL) AS membership_card_3_uploaded,
        COALESCE(json_agg(json_build_object(
          'name', m.name, 'registerNumber', m.register_number, 'email', m.email,
          'department', m.department, 'isCaptain', m.is_leader

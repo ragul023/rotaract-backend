@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS college_teams (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE college_teams ALTER COLUMN purse TYPE NUMERIC USING purse::numeric;
+ALTER TABLE college_teams ALTER COLUMN spent TYPE NUMERIC USING spent::numeric;
 
 ALTER TABLE college_teams
   ADD COLUMN IF NOT EXISTS registration_status VARCHAR(30) NOT NULL DEFAULT 'CONFIRMED'
@@ -98,12 +100,28 @@ CREATE TABLE IF NOT EXISTS team_registration_payments (
   currency VARCHAR(3) NOT NULL DEFAULT 'INR',
   payment_method VARCHAR(30) NOT NULL DEFAULT 'UPI_MANUAL',
   payment_reference VARCHAR(255),
+  membership_privilege BOOLEAN NOT NULL DEFAULT FALSE,
+  membership_card_1 BYTEA,
+  membership_card_2 BYTEA,
+  membership_card_3 BYTEA,
+  membership_card_1_type VARCHAR(100),
+  membership_card_2_type VARCHAR(100),
+  membership_card_3_type VARCHAR(100),
   payment_status VARCHAR(30) NOT NULL DEFAULT 'PENDING'
     CHECK (payment_status IN ('PENDING', 'PENDING_VERIFICATION', 'PAID', 'REJECTED')),
   verified_by UUID REFERENCES users(id),
   verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE team_registration_payments
+  ADD COLUMN IF NOT EXISTS membership_privilege BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS membership_card_1 BYTEA,
+  ADD COLUMN IF NOT EXISTS membership_card_2 BYTEA,
+  ADD COLUMN IF NOT EXISTS membership_card_3 BYTEA,
+  ADD COLUMN IF NOT EXISTS membership_card_1_type VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS membership_card_2_type VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS membership_card_3_type VARCHAR(100);
 
 CREATE TABLE IF NOT EXISTS ipl_franchises (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -189,6 +207,9 @@ CREATE TABLE IF NOT EXISTS wallets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE wallets ALTER COLUMN available_purse TYPE NUMERIC USING available_purse::numeric;
+ALTER TABLE wallets ALTER COLUMN spent_purse TYPE NUMERIC USING spent_purse::numeric;
+ALTER TABLE wallets ALTER COLUMN bonus_purse TYPE NUMERIC USING bonus_purse::numeric;
 
 CREATE TABLE IF NOT EXISTS squads (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -217,6 +238,11 @@ CREATE TABLE IF NOT EXISTS trade_offers (
   CHECK (from_team_id <> to_team_id),
   CHECK (offered_player_id <> requested_player_id)
 );
+ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+UPDATE trade_offers SET expires_at = created_at + INTERVAL '30 seconds'
+  WHERE expires_at IS NULL AND status = 'PENDING';
+ALTER TABLE trade_offers ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '30 seconds');
+ALTER TABLE trade_offers ALTER COLUMN cash_amount TYPE NUMERIC USING cash_amount::numeric;
 ALTER TABLE trade_offers
   ADD COLUMN IF NOT EXISTS cash_amount NUMERIC(10,2) NOT NULL DEFAULT 0
   CHECK (cash_amount >= 0);
@@ -235,6 +261,7 @@ CREATE TABLE IF NOT EXISTS player_listings (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE player_listings ALTER COLUMN asking_price TYPE NUMERIC USING asking_price::numeric;
 CREATE UNIQUE INDEX IF NOT EXISTS player_listings_one_open_per_player
   ON player_listings(player_id) WHERE status = 'OPEN';
 
@@ -248,11 +275,17 @@ CREATE TABLE IF NOT EXISTS player_purchase_requests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE player_purchase_requests ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+UPDATE player_purchase_requests SET expires_at = created_at + INTERVAL '30 seconds'
+  WHERE expires_at IS NULL AND status = 'PENDING';
+ALTER TABLE player_purchase_requests ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '30 seconds');
 CREATE UNIQUE INDEX IF NOT EXISTS player_purchase_requests_one_pending
   ON player_purchase_requests(listing_id, buyer_team_id)
   WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS player_purchase_requests_buyer_queue
   ON player_purchase_requests(buyer_team_id, buyer_acknowledged_at, created_at);
+CREATE INDEX IF NOT EXISTS trade_offers_pending_expiry ON trade_offers(expires_at) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS player_purchase_requests_pending_expiry ON player_purchase_requests(expires_at) WHERE status = 'PENDING';
 
 CREATE TABLE IF NOT EXISTS team_power_uses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

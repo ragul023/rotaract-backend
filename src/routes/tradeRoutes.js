@@ -27,11 +27,11 @@ const offerSchema = z.object({
   toTeamId: z.string().uuid(),
   offeredPlayerId: z.string().uuid(),
   requestedPlayerId: z.string().uuid(),
-  cashAmount: z.number().min(0).max(99999999).default(0),
+  cashAmount: z.number().finite().min(0).default(0),
 });
 const listingSchema = z.object({
   playerId: z.string().uuid(),
-  askingPrice: z.number().positive().max(99999999),
+  askingPrice: z.number().finite().positive(),
 });
 const responseSchema = z.object({ accepted: z.boolean() });
 const uuidSchema = z.string().uuid();
@@ -192,6 +192,10 @@ router.post(
         requestId,
         accept: accepted,
       });
+      if (request.expired) {
+        emitMarketUpdate(req, [request.seller_team_id, request.buyer_team_id]);
+        return errorResponse(res, "This request expired and was automatically rejected", 410, "TRADE_REQUEST_EXPIRED");
+      }
       emitMarketUpdate(req, [request.seller_team_id, request.buyer_team_id]);
       if (accepted)
         req.app.get("io")?.to("auction-room").emit("team_rosters_updated");
@@ -274,6 +278,10 @@ router.post(
         offerId,
         accept: accepted,
       });
+      if (offer.expired) {
+        emitMarketUpdate(req, [offer.from_team_id, offer.to_team_id]);
+        return errorResponse(res, "This request expired and was automatically rejected", 410, "TRADE_REQUEST_EXPIRED");
+      }
       const io = req.app.get("io");
       emitMarketUpdate(req, [offer.from_team_id, offer.to_team_id]);
       if (accepted) io?.to("auction-room").emit("team_rosters_updated");

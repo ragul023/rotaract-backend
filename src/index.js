@@ -13,6 +13,7 @@ import playerRoutes from "./routes/playerRoutes.js";
 import auctionRoutes from "./routes/auctionRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import tradeRoutes from "./routes/tradeRoutes.js";
+import { expireTradeRequests } from "./services/tradeService.js";
 
 import { query } from "./database/connection.js";
 import { errorResponse } from "./utils/response.js";
@@ -163,6 +164,17 @@ const io = new Server(server, {
 });
 
 app.set("io", io);
+
+const expirePendingTrades = async () => {
+  try {
+    const expiredCount = await expireTradeRequests();
+    if (expiredCount > 0) io.to("auction-room").emit("trade_market_updated");
+  } catch (error) {
+    console.error("[TRADE EXPIRY ERROR]", error);
+  }
+};
+expirePendingTrades();
+setInterval(expirePendingTrades, 1000);
 
 /*
 |--------------------------------------------------------------------------

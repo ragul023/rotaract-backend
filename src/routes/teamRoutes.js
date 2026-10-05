@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 import { z } from "zod";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { query, withTransaction } from "../database/connection.js";
@@ -20,8 +21,20 @@ import {
   createPaymentOrder,
   submitUpiReference,
 } from "../services/paymentService.js";
+import { signRefreshToken, signToken } from "../services/authService.js";
 
 const router = express.Router();
+const membershipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 3 },
+  fileFilter: (_req, file, callback) => {
+    if (["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(file.mimetype)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error("Membership cards must be JPG, PNG, WebP, or PDF files"));
+  },
+});
 
 const createTeamSchema = z.object({
   name: z.string().min(3),
@@ -67,6 +80,56 @@ router.get("/me/registration", authMiddleware, async (req, res) =>
   }),
 );
 
+router.post("/me/join", authMiddleware, requireRole("PARTICIPANT"), async (req, res) => {
+  try {
+    const { teamCode, registerNumber, department } = z.object({
+      teamCode: z.string().trim().min(4).transform((value) => value.toUpperCase()),
+      registerNumber: z.string().trim().min(2),
+      department: z.string().trim().min(2),
+    }).parse(req.body);
+    if (req.user.teamId) throw new Error("You are already on a team");
+
+    const teamId = await withTransaction(async (client) => {
+      const teamResult = await client.query(
+        `SELECT id FROM college_teams
+         WHERE code = $1 AND registration_status = 'CONFIRMED' AND status = 'ACTIVE'
+         FOR UPDATE`,
+        [teamCode],
+      );
+      if (teamResult.rowCount === 0) throw new Error("Invalid team code");
+      const team = teamResult.rows[0];
+      const memberCount = await client.query(
+        "SELECT COUNT(*)::int AS count FROM team_members WHERE team_id = $1",
+        [team.id],
+      );
+      if (memberCount.rows[0].count >= 5) throw new Error("Team full");
+      const existingMembership = await client.query(
+        "SELECT 1 FROM team_members WHERE user_id = $1 LIMIT 1",
+        [req.user.id],
+      );
+      if (existingMembership.rowCount) throw new Error("You are already on a team");
+      await client.query(
+        `INSERT INTO team_members
+          (id, team_id, user_id, name, email, register_number, department, is_leader)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, false)`,
+        [team.id, req.user.id, req.user.name, req.user.email, registerNumber, department],
+      );
+      return team.id;
+    });
+
+    const userResult = await query("SELECT * FROM users WHERE id = $1", [req.user.id]);
+    const user = userResult.rows[0];
+    return successResponse(res, {
+      user: { ...user, password_hash: undefined },
+      teamId,
+      accessToken: signToken(user, teamId),
+      refreshToken: signRefreshToken(user, teamId),
+    });
+  } catch (error) {
+    return errorResponse(res, error.message || "Unable to join team", 400, "TEAM_JOIN_FAILED");
+  }
+});
+
 router.post(
   "/me/payment-order",
   authMiddleware,
@@ -104,6 +167,46 @@ router.post(
         400,
         "PAYMENT_REFERENCE_FAILED",
       );
+    }
+  },
+);
+
+router.post(
+  "/me/membership-privilege",
+  authMiddleware,
+  requireRole("PARTICIPANT"),
+  membershipUpload.fields([
+    { name: "memberCard1", maxCount: 1 },
+    { name: "memberCard2", maxCount: 1 },
+    { name: "memberCard3", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const enabled = req.body.enabled === "true";
+      const cards = ["memberCard1", "memberCard2", "memberCard3"].map(
+        (key) => req.files?.[key]?.[0] || null,
+      );
+      if (enabled && cards.some((card) => !card)) {
+        throw new Error("Upload membership cards for all three member slots");
+      }
+      const payment = await query(
+        `UPDATE team_registration_payments p
+         SET membership_privilege = $2,
+             membership_card_1 = $3, membership_card_1_type = $4,
+             membership_card_2 = $5, membership_card_2_type = $6,
+             membership_card_3 = $7, membership_card_3_type = $8
+         FROM college_teams ct
+         WHERE p.team_id = ct.id AND ct.leader_id = $1
+         RETURNING p.membership_privilege`,
+        [req.user.id, enabled,
+          enabled ? cards[0].buffer : null, enabled ? cards[0].mimetype : null,
+          enabled ? cards[1].buffer : null, enabled ? cards[1].mimetype : null,
+          enabled ? cards[2].buffer : null, enabled ? cards[2].mimetype : null],
+      );
+      if (!payment.rowCount) throw new Error("Create the team payment order first");
+      return successResponse(res, { membershipPrivilege: payment.rows[0].membership_privilege });
+    } catch (error) {
+      return errorResponse(res, error.message || "Unable to save membership cards", 400, "MEMBERSHIP_UPLOAD_FAILED");
     }
   },
 );

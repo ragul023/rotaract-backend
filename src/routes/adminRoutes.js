@@ -34,6 +34,37 @@ import {
 } from "../services/registrationService.js";
 
 const router = express.Router();
+const membershipCardColumns = {
+  1: ["membership_card_1", "membership_card_1_type"],
+  2: ["membership_card_2", "membership_card_2_type"],
+  3: ["membership_card_3", "membership_card_3_type"],
+};
+
+router.get(
+  "/registrations/:registrationId/membership-cards/:slot",
+  authMiddleware,
+  requireRole("SUPER_ADMIN", "AUCTION_ADMIN"),
+  async (req, res) => {
+    const teamId = z.string().uuid().safeParse(req.params.registrationId);
+    const slot = z.coerce.number().int().min(1).max(3).safeParse(req.params.slot);
+    if (!teamId.success || !slot.success) {
+      return errorResponse(res, "Invalid team or membership card", 400, "INVALID_MEMBERSHIP_CARD");
+    }
+    const [fileColumn, typeColumn] = membershipCardColumns[slot.data];
+    const result = await query(
+      `SELECT p.${fileColumn} AS file, p.${typeColumn} AS mime_type
+       FROM team_registration_payments p WHERE p.team_id = $1`,
+      [teamId.data],
+    );
+    if (!result.rowCount || !result.rows[0].file) {
+      return errorResponse(res, "Membership card not found", 404, "MEMBERSHIP_CARD_NOT_FOUND");
+    }
+    res.setHeader("Content-Type", result.rows[0].mime_type || "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="team-${teamId.data}-member-${slot.data}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.send(result.rows[0].file);
+  },
+);
 const scoringSettingsSchema = z.object({
   target_player: z.number().int().min(0).max(100),
   captain_bonus: z.number().int().min(0).max(100),
@@ -107,6 +138,7 @@ router.put(
         .get("io")
         ?.to("auction-room")
         .emit("trade_window_updated", result);
+      if (!result.open) req.app.get("io")?.to("auction-room").emit("trade_market_updated");
       return successResponse(res, result);
     } catch (error) {
       return errorResponse(
